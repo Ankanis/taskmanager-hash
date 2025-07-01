@@ -1,0 +1,296 @@
+import tkinter as tk
+from tkinter import messagebox
+from collections import deque
+import json
+import os
+import hashlib
+
+# === UserManager ===
+class UserManager:
+    def __init__(self, filename="users.json", session_file="session.json"):
+        self.filename = filename
+        self.session_file = session_file
+        self.users = self.load_users()
+
+    def load_users(self):
+        if os.path.exists(self.filename):
+            with open(self.filename, "r") as f:
+                return json.load(f)
+        return {}
+
+    def save_users(self):
+        with open(self.filename, "w") as f:
+            json.dump(self.users, f, indent=4)
+
+    def hash_password(self, password):
+        return hashlib.sha256(password.encode()).hexdigest()
+
+    def register(self, username, password):
+        if username in self.users:
+            return False
+        self.users[username] = self.hash_password(password)
+        self.save_users()
+        return True
+
+    def authenticate(self, username, password):
+        return self.users.get(username) == self.hash_password(password)
+
+    def remember_user(self, username):
+        with open(self.session_file, "w") as f:
+            json.dump({"username": username}, f)
+
+    def forget_user(self):
+        if os.path.exists(self.session_file):
+            os.remove(self.session_file)
+
+    def get_remembered_user(self):
+        if os.path.exists(self.session_file):
+            with open(self.session_file, "r") as f:
+                data = json.load(f)
+                return data.get("username")
+        return None
+
+# === Task & TaskQueue ===
+class Task:
+    def __init__(self, title, description, estimated_time):
+        self.title = title
+        self.description = description
+        self.estimated_time = estimated_time
+
+    def to_dict(self):
+        return {
+            "title": self.title,
+            "description": self.description,
+            "estimated_time": self.estimated_time
+        }
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(data["title"], data["description"], data["estimated_time"])
+
+class TaskQueue:
+    def __init__(self, username):
+        self.tasks = deque()
+        self.username = username
+        self.filename = f"tasks_{username}.json"
+        self.load_tasks()
+
+    def add_task(self, title, description, estimated_time):
+        self.tasks.append(Task(title, description, estimated_time))
+        self.save_tasks()
+
+    def remove_task(self):
+        if self.tasks:
+            self.tasks.popleft()
+            self.save_tasks()
+
+    def get_tasks(self):
+        return list(self.tasks)
+
+    def save_tasks(self):
+        with open(self.filename, "w") as f:
+            json.dump([task.to_dict() for task in self.tasks], f, indent=4)
+
+    def load_tasks(self):
+        if os.path.exists(self.filename):
+            with open(self.filename, "r") as f:
+                data = json.load(f)
+                self.tasks = deque(Task.from_dict(item) for item in data)
+
+# === TodoApp ===
+class TodoApp:
+    def __init__(self, root, username, logout_callback):
+        self.task_queue = TaskQueue(username)
+        self.username = username
+        self.logout_callback = logout_callback
+
+        root.title(f"{username}'s Task Queue")
+        root.geometry("450x550")
+        root.resizable(False, False)
+        root.configure(bg="#f0f4f7")
+
+        tk.Label(root, text=f"Welcome, {username}", font=("Helvetica", 12, "bold"), bg="#f0f4f7").pack(pady=(10, 0))
+        tk.Label(root, text="To Do List", font=("Helvetica", 14, "bold"), bg="#f0f4f7").pack(pady=(0, 5))
+
+        input_frame = tk.Frame(root, bg="#f0f4f7")
+        input_frame.pack(pady=2)
+
+        tk.Label(input_frame, text="Title:", font=("Helvetica", 9), bg="#f0f4f7").pack(anchor="w")
+        self.entry_title = tk.Entry(input_frame, font=("Helvetica", 10), width=35)
+        self.entry_title.pack()
+
+        tk.Label(input_frame, text="Description:", font=("Helvetica", 9), bg="#f0f4f7").pack(anchor="w")
+        self.entry_description = tk.Text(input_frame, font=("Helvetica", 9), height=2, width=35, wrap=tk.WORD)
+        self.entry_description.pack()
+
+        tk.Label(input_frame, text="Estimated Time:", font=("Helvetica", 9), bg="#f0f4f7").pack(anchor="w")
+        self.entry_time = tk.Entry(input_frame, font=("Helvetica", 10), width=35)
+        self.entry_time.pack()
+
+        btn_frame = tk.Frame(root, bg="#f0f4f7")
+        btn_frame.pack(pady=10)
+
+        tk.Button(btn_frame, text="Add Task", font=("Helvetica", 9), bg="#4CAF50", fg="white",
+                  command=self.add_task, width=12).grid(row=0, column=0, padx=5)
+        tk.Button(btn_frame, text="Delete Task", font=("Helvetica", 9), bg="#2196F3", fg="white",
+                  command=self.remove_task, width=12).grid(row=0, column=1, padx=5)
+        tk.Button(btn_frame, text="Logout", font=("Helvetica", 9), bg="#f44336", fg="white",
+                  command=self.logout_callback, width=12).grid(row=0, column=2, padx=5)
+
+        tk.Label(root, text="Queued Tasks (FIFO)", font=("Helvetica", 11, "bold"), bg="#f0f4f7").pack(pady=(5, 0))
+
+        task_frame = tk.Frame(root)
+        task_frame.pack()
+
+        self.task_listbox = tk.Listbox(task_frame, font=("Courier New", 9), height=16, width=58,
+                                       selectbackground="#0066cc", selectforeground="white")
+        self.task_listbox.pack(side=tk.LEFT, fill=tk.BOTH)
+
+        scrollbar = tk.Scrollbar(task_frame, command=self.task_listbox.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.task_listbox.config(yscrollcommand=scrollbar.set)
+
+        self.status_label = tk.Label(root, text="", font=("Helvetica", 9), bg="#f0f4f7")
+        self.status_label.pack(pady=3)
+
+        self.task_listbox.bind("<Double-Button-1>", self.edit_task_popup)
+
+        self.update_task_list()
+
+    def add_task(self):
+        title = self.entry_title.get().strip()
+        description = self.entry_description.get("1.0", tk.END).strip()
+        estimated_time = self.entry_time.get().strip()
+
+        if not title or not description or not estimated_time:
+            messagebox.showwarning("Missing Info", "Fill all fields.")
+            return
+
+        self.task_queue.add_task(title, description, estimated_time)
+        self.entry_title.delete(0, tk.END)
+        self.entry_description.delete("1.0", tk.END)
+        self.entry_time.delete(0, tk.END)
+        self.update_task_list()
+
+    def remove_task(self):
+        self.task_queue.remove_task()
+        self.update_task_list()
+
+    def update_task_list(self):
+        self.task_listbox.delete(0, tk.END)
+        tasks = self.task_queue.get_tasks()
+
+        for task in tasks:
+            self.task_listbox.insert(tk.END, f"📌 {task.title}   |   ⏱ {task.estimated_time}")
+            self.task_listbox.insert(tk.END, f"🗘 {task.description}")
+            self.task_listbox.insert(tk.END, "-" * 58)
+
+        self.status_label.config(text=f"Total Tasks: {len(tasks)}")
+
+    def edit_task_popup(self, event):
+        try:
+            index = self.task_listbox.nearest(event.y) // 3
+            task = self.task_queue.get_tasks()[index]
+
+            popup = tk.Toplevel()
+            popup.title("Edit Task")
+            popup.geometry("350x250")
+            popup.resizable(False, False)
+
+            tk.Label(popup, text="Title:", font=("Helvetica", 10)).pack(anchor="w", padx=10, pady=3)
+            title_entry = tk.Entry(popup, font=("Helvetica", 10), width=40)
+            title_entry.insert(0, task.title)
+            title_entry.pack(padx=10)
+
+            tk.Label(popup, text="Description:", font=("Helvetica", 10)).pack(anchor="w", padx=10, pady=3)
+            desc_text = tk.Text(popup, font=("Helvetica", 10), height=3, width=40, wrap=tk.WORD)
+            desc_text.insert("1.0", task.description)
+            desc_text.pack(padx=10)
+
+            tk.Label(popup, text="Estimated Time:", font=("Helvetica", 10)).pack(anchor="w", padx=10, pady=3)
+            time_entry = tk.Entry(popup, font=("Helvetica", 10), width=40)
+            time_entry.insert(0, task.estimated_time)
+            time_entry.pack(padx=10)
+
+            def save_changes():
+                new_title = title_entry.get().strip()
+                new_desc = desc_text.get("1.0", tk.END).strip()
+                new_time = time_entry.get().strip()
+                if new_title and new_desc and new_time:
+                    task.title = new_title
+                    task.description = new_desc
+                    task.estimated_time = new_time
+                    self.task_queue.save_tasks()
+                    self.update_task_list()
+                    popup.destroy()
+                else:
+                    messagebox.showwarning("Invalid Input", "All fields must be filled.")
+
+            tk.Button(popup, text="Save", font=("Helvetica", 10), bg="#4CAF50", fg="white",
+                      command=save_changes).pack(pady=10)
+
+        except IndexError:
+            messagebox.showwarning("No Task", "Invalid task selection.")
+
+# === Auth Window ===
+def show_login():
+    login_window = tk.Tk()
+    login_window.title("Login")
+    login_window.geometry("300x260")
+    login_window.resizable(False, False)
+
+    manager = UserManager()
+
+    tk.Label(login_window, text="Username").pack(pady=(15, 5))
+    username_entry = tk.Entry(login_window)
+    username_entry.pack()
+
+    tk.Label(login_window, text="Password").pack(pady=5)
+    password_entry = tk.Entry(login_window, show="*")
+    password_entry.pack()
+
+    remember_var = tk.IntVar()
+    tk.Checkbutton(login_window, text="Remember Me", variable=remember_var).pack(pady=5)
+
+    def login():
+        username = username_entry.get().strip()
+        password = password_entry.get().strip()
+        if manager.authenticate(username, password):
+            if remember_var.get():
+                manager.remember_user(username)
+            login_window.destroy()
+            launch_app(username)
+        else:
+            messagebox.showerror("Login Failed", "Invalid credentials.")
+
+    def register():
+        username = username_entry.get().strip()
+        password = password_entry.get().strip()
+        if manager.register(username, password):
+            messagebox.showinfo("Success", "User registered! Now login.")
+        else:
+            messagebox.showwarning("User Exists", "Username already taken.")
+
+    tk.Button(login_window, text="Login", command=login, width=15).pack(pady=(10, 5))
+    tk.Button(login_window, text="Register", command=register, width=15).pack()
+
+    login_window.mainloop()
+
+# === Main App Launcher ===
+def launch_app(username):
+    root = tk.Tk()
+    def logout():
+        root.destroy()
+        UserManager().forget_user()
+        show_login()
+
+    app = TodoApp(root, username, logout)
+    root.mainloop()
+
+# === Entry Point ===
+if __name__ == "__main__":
+    remembered = UserManager().get_remembered_user()
+    if remembered:
+        launch_app(remembered)
+    else:
+        show_login()
